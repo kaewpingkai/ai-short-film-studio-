@@ -1,3 +1,4 @@
+import io
 import json
 import re
 import streamlit as st
@@ -68,6 +69,47 @@ def fallback_story(title, genre, idea, scene_count, duration, mood, language, st
     return story
 
 def gemini_story(api_key, title, genre, idea, scene_count, duration, mood, language, style_notes):
+def gemini_generate_image(api_key, plan, scene):
+    from google import genai
+
+    client = genai.Client(api_key=api_key)
+
+    prompt = f"""
+Create one cinematic film still for a short film.
+
+Film title: {plan.get("title", "")}
+Genre: {plan.get("genre", "")}
+Overall visual style: {plan.get("visual_style", "")}
+Story summary: {plan.get("logline", "")}
+Scene number: {scene.get("scene_number", "")}
+Scene title: {scene.get("scene_title", "")}
+Scene purpose: {scene.get("purpose", "")}
+Scene image prompt: {scene.get("visual_prompt", "")}
+
+Requirements:
+- Widescreen cinematic composition, aspect ratio 16:9.
+- High-quality film still, coherent lighting and color grading.
+- Keep the scene consistent with the story and visual style.
+- No captions, subtitles, logos, watermarks, or written text.
+- Create a single image, not a collage or storyboard.
+"""
+
+    response = client.models.generate_content(
+        model="gemini-3.1-flash-image",
+        contents=prompt,
+    )
+
+    for part in response.parts:
+        if getattr(part, "inline_data", None) is not None:
+            image = part.as_image()
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG")
+            return buffer.getvalue()
+
+    raise RuntimeError(
+        "โมเดลไม่ได้ส่งภาพกลับมา กรุณาลองใหม่หรือตรวจสอบโควตา API"
+    )
+    
     from google import genai
     client = genai.Client(api_key=api_key)
     prompt = f"""
@@ -98,9 +140,11 @@ if st.button("✨ สร้างพล็อตและแบ่งฉาก",
                 if use_ai and api_key.strip():
                     plan = gemini_story(api_key.strip(), title, genre, idea, scene_count, duration, mood, language, style_notes)
                     st.session_state["film_plan"] = plan
+                    st.session_state["scene_images"] = {}
                     st.session_state["plan_source"] = "Gemini API"
                 else:
                     st.session_state["film_plan"] = fallback_story(title, genre, idea, scene_count, duration, mood, language, style_notes)
+                    st.session_state["scene_images"] = {}
                     st.session_state["plan_source"] = "Template mode (ไม่ใช้ API)"
             except Exception as e:
                 st.error(f"เรียก AI ไม่สำเร็จ: {e}")
@@ -116,6 +160,66 @@ if "film_plan" in st.session_state:
     st.subheader(plan.get("title", "เรื่องของฉัน"))
     st.write(plan.get("logline", ""))
     st.caption(f"สไตล์ภาพ: {plan.get('visual_style', '')}")
+    st.subheader("🖼️ สร้างภาพ AI ของแต่ละฉาก")
+    st.caption(
+        "ใช้ Gemini API key ที่กรอกไว้ในแถบด้านข้าง "
+        "การสร้างภาพอาจใช้โควตาหรือมีค่าใช้จ่าย"
+    )
+
+    if "scene_images" not in st.session_state:
+        st.session_state["scene_images"] = {}
+
+    if st.button(
+        "🎨 สร้างภาพทุกฉาก",
+        type="primary",
+        key="generate_all_scene_images",
+        use_container_width=True,
+    ):
+        if not api_key.strip():
+            st.error(
+                "กรุณากรอก Gemini API key ในแถบด้านข้างก่อนสร้างภาพ"
+            )
+        else:
+            scenes = plan.get("scenes", [])
+            progress = st.progress(0)
+            status = st.empty()
+
+            for i, scene in enumerate(scenes):
+                number = scene.get("scene_number", i + 1)
+                status.write(
+                    f"กำลังสร้างภาพฉาก {number}/{len(scenes)}..."
+                )
+
+                try:
+                    image_bytes = gemini_generate_image(
+                        api_key.strip(), plan, scene
+                    )
+                    st.session_state["scene_images"][str(number)] = (
+                        image_bytes
+                    )
+                except Exception as e:
+                    st.error(f"ฉาก {number} สร้างภาพไม่สำเร็จ: {e}")
+
+                progress.progress((i + 1) / max(len(scenes), 1))
+
+            status.write("ประมวลผลครบทุกฉากแล้ว")
+
+    for i, scene in enumerate(plan.get("scenes", [])):
+        number = scene.get("scene_number", i + 1)
+        image_bytes = st.session_state["scene_images"].get(str(number))
+
+        if image_bytes:
+            st.markdown(
+                f"**ฉาก {number}: {scene.get('scene_title', 'ฉาก')}**"
+            )
+            st.image(image_bytes, use_container_width=True)
+            st.download_button(
+                f"⬇️ ดาวน์โหลดภาพฉาก {number}",
+                data=image_bytes,
+                file_name=f"scene_{number}.png",
+                mime="image/png",
+                key=f"download_scene_{number}",
+            )
     tabs = st.tabs([f"ฉาก {s.get('scene_number', i+1)}" for i, s in enumerate(plan.get("scenes", []))])
     for tab, scene in zip(tabs, plan.get("scenes", [])):
         with tab:
@@ -127,7 +231,7 @@ if "film_plan" in st.session_state:
             st.code(scene.get("video_prompt", ""), language=None)
             st.markdown("**เสียงบรรยาย**")
             st.write(scene.get("voiceover", ""))
-            st.caption(f"เวลาฉาก: {scene.get('duration_seconds', 0)} วินาที")
+            st.caption(f"เวลาฉาก: {scene.get('duration_seconds', 0)} วินาที")        
     json_bytes = json.dumps(plan, ensure_ascii=False, indent=2).encode("utf-8")
     prompt_text = "\n\n".join(
         f"SCENE {s.get('scene_number')}: {s.get('scene_title')}\nIMAGE PROMPT: {s.get('visual_prompt')}\nVIDEO PROMPT: {s.get('video_prompt')}\nVOICEOVER: {s.get('voiceover')}"
