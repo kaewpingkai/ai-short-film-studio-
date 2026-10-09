@@ -68,7 +68,37 @@ def fallback_story(title, genre, idea, scene_count, duration, mood, language, st
         })
     return story
 
+
 def gemini_story(api_key, title, genre, idea, scene_count, duration, mood, language, style_notes):
+    from google import genai
+
+    client = genai.Client(api_key=api_key)
+
+    prompt = f"""
+You are a short-film pre-production assistant. Return ONLY valid JSON, no markdown.
+Create a short film plan in {language}. All fields must be present:
+title, genre, logline, duration_seconds, visual_style, notes, scenes.
+scenes must contain exactly {scene_count} items. Each item has:
+scene_number (integer), scene_title, purpose, visual_prompt, video_prompt, voiceover, duration_seconds (integer).
+Title: {title}
+Genre: {genre}
+Idea: {idea}
+Visual mood: {mood}
+Additional notes: {style_notes}
+Target total duration: {duration} seconds.
+Keep prompts suitable for general audiences. Maintain character and setting consistency.
+"""
+
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt,
+    )
+
+    raw = response.text.strip()
+    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I)
+    return json.loads(raw)
+
+
 def gemini_generate_image(api_key, plan, scene):
     from google import genai
 
@@ -109,27 +139,6 @@ Requirements:
     raise RuntimeError(
         "โมเดลไม่ได้ส่งภาพกลับมา กรุณาลองใหม่หรือตรวจสอบโควตา API"
     )
-    
-    from google import genai
-    client = genai.Client(api_key=api_key)
-    prompt = f"""
-You are a short-film pre-production assistant. Return ONLY valid JSON, no markdown.
-Create a short film plan in {language}. All fields must be present:
-title, genre, logline, duration_seconds, visual_style, notes, scenes.
-scenes must contain exactly {scene_count} items. Each item has:
-scene_number (integer), scene_title, purpose, visual_prompt, video_prompt, voiceover, duration_seconds (integer).
-Title: {title}
-Genre: {genre}
-Idea: {idea}
-Visual mood: {mood}
-Additional notes: {style_notes}
-Target total duration: {duration} seconds.
-Keep prompts suitable for general audiences. Maintain character and setting consistency.
-"""
-    response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-    raw = response.text.strip()
-    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I)
-    return json.loads(raw)
 
 if st.button("✨ สร้างพล็อตและแบ่งฉาก", type="primary", use_container_width=True):
     if not idea.strip():
@@ -240,7 +249,7 @@ if "film_plan" in st.session_state:
     c1, c2 = st.columns(2)
     c1.download_button("⬇️ ดาวน์โหลดแผน JSON", data=json_bytes, file_name="film_plan.json", mime="application/json", use_container_width=True)
     c2.download_button("⬇️ ดาวน์โหลด Prompts TXT", data=prompt_text, file_name="film_prompts.txt", mime="text/plain", use_container_width=True)
-    st.warning("รุ่นนี้สร้างพล็อตและ Prompt เท่านั้น ยังไม่ได้สร้างภาพหรือวิดีโอจริง ขั้นต่อไปคือเชื่อมต่อผู้ให้บริการสร้างสื่อที่มี API และตรวจสอบโควตา/ค่าใช้จ่ายก่อนใช้งาน")
+    st.caption("หมายเหตุ: ระบบสร้างภาพนิ่งด้วย Gemini API ได้ ส่วนการสร้างวิดีโอยังไม่ได้เปิดใช้งาน")
 else:
     st.info("เริ่มได้เลย: ใส่ไอเดียเรื่อง แล้วกด “สร้างพล็อตและแบ่งฉาก”")
     st.markdown("**ความสามารถในรุ่นแรก**")
