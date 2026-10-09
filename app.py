@@ -1,0 +1,146 @@
+import json
+import re
+import streamlit as st
+
+st.set_page_config(page_title="AI Short Film Studio", page_icon="🎬", layout="wide")
+
+st.markdown("""
+<style>
+.block-container {max-width: 1100px; padding-top: 1.4rem;}
+.stApp {background: linear-gradient(160deg, #100c20 0%, #171326 55%, #0c1020 100%);}
+h1, h2, h3, p, label {color: #f4efff;}
+div[data-testid="stMetric"] {background: #241d37; padding: 12px; border-radius: 12px;}
+</style>
+""", unsafe_allow_html=True)
+
+st.title("🎬 AI Short Film Studio")
+st.caption("รุ่นเริ่มต้น • วางพล็อต แบ่งฉาก และสร้าง Prompt สำหรับผลิตหนังสั้น")
+
+with st.sidebar:
+    st.header("⚙️ ตั้งค่าโปรเจกต์")
+    title = st.text_input("ชื่อเรื่อง", "คืนสุดท้ายที่สถานี")
+    genre = st.selectbox("แนวหนัง", ["ไซไฟ", "สยองขวัญ", "โรแมนติก", "แฟนตาซี", "แอ็กชัน", "ดราม่า", "สืบสวน"])
+    mood = st.selectbox("อารมณ์ภาพ", ["cinematic, dramatic lighting", "warm and nostalgic", "dark and suspenseful", "dreamlike and surreal", "bright and whimsical"])
+    duration = st.select_slider("ความยาวโดยประมาณ", options=[30, 60, 90, 120, 180], value=60, format_func=lambda x: f"{x} วินาที")
+    scene_count = st.slider("จำนวนฉาก", 3, 10, 5)
+    language = st.selectbox("ภาษา", ["ไทย", "English"])
+    st.divider()
+    use_ai = st.checkbox("ใช้ Gemini API ถ้ามี API key", value=False)
+    api_key = st.text_input("Gemini API key (ไม่บังคับ)", type="password", help="เก็บไว้ในเซสชันนี้เท่านั้น อย่าใส่ API key ในโค้ดหรือส่งให้ผู้อื่น")
+
+idea = st.text_area("💡 ไอเดียเรื่อง", "หญิงสาวคนหนึ่งได้รับข้อความจากตัวเองในอนาคต เตือนว่าอย่าขึ้นรถไฟเที่ยวสุดท้าย", height=110)
+style_notes = st.text_input("รายละเอียดเพิ่มเติม", "ตัวละครหลักคนเดียว ฉากกลางคืน มีจุดหักมุม")
+
+def fallback_story(title, genre, idea, scene_count, duration, mood, language, style_notes):
+    names = [
+        ("เปิดเรื่อง", "แนะนำตัวละครและสถานที่ พร้อมภาพกว้างเพื่อสร้างบรรยากาศ"),
+        ("สัญญาณแรก", "ตัวละครพบสิ่งผิดปกติที่เชื่อมโยงกับไอเดียหลัก"),
+        ("ความขัดแย้ง", "เบาะแสใหม่ทำให้ตัวละครต้องตัดสินใจ"),
+        ("จุดพลิกผัน", "ความจริงเปลี่ยนความเข้าใจของตัวละคร"),
+        ("บทสรุป", "ปิดเรื่องด้วยภาพจำและอารมณ์ที่ชัดเจน"),
+        ("ผลสะเทือน", "แสดงผลลัพธ์จากการตัดสินใจ"),
+        ("เงื่อนงำใหม่", "ทิ้งคำถามเล็กน้อยให้ผู้ชมตีความ"),
+        ("เผชิญหน้า", "ตัวละครเผชิญหน้ากับอุปสรรคสำคัญ"),
+        ("ช่วงเงียบ", "ใช้ภาพและเสียงแทนบทพูด"),
+        ("ตอนจบ", "จบด้วยภาพที่สอดคล้องกับธีมเรื่อง"),
+    ]
+    story = {
+        "title": title,
+        "genre": genre,
+        "logline": f"{idea.strip()} — เรื่องแนว{genre}ที่เล่าด้วยโทน {mood}",
+        "duration_seconds": duration,
+        "visual_style": mood,
+        "notes": style_notes,
+        "scenes": []
+    }
+    for i in range(scene_count):
+        name, beat = names[i % len(names)]
+        seconds = max(4, duration // scene_count)
+        story["scenes"].append({
+            "scene_number": i + 1,
+            "scene_title": name,
+            "purpose": beat,
+            "visual_prompt": f"{genre} short film, {idea}, scene {i+1}: {beat}. {mood}. Consistent character design, cinematic composition, detailed environment, no text, {style_notes}",
+            "video_prompt": f"Create a {seconds}-second cinematic shot. {idea}. Action: {beat}. Camera movement is subtle and intentional; {mood}; natural motion, consistent character appearance, no subtitles or logos.",
+            "voiceover": "บรรยายสั้น ๆ เพื่อเชื่อมอารมณ์ของฉาก" if language == "ไทย" else "A short voiceover to connect the scene emotionally.",
+            "duration_seconds": seconds
+        })
+    return story
+
+def gemini_story(api_key, title, genre, idea, scene_count, duration, mood, language, style_notes):
+    from google import genai
+    client = genai.Client(api_key=api_key)
+    prompt = f"""
+You are a short-film pre-production assistant. Return ONLY valid JSON, no markdown.
+Create a short film plan in {language}. All fields must be present:
+title, genre, logline, duration_seconds, visual_style, notes, scenes.
+scenes must contain exactly {scene_count} items. Each item has:
+scene_number (integer), scene_title, purpose, visual_prompt, video_prompt, voiceover, duration_seconds (integer).
+Title: {title}
+Genre: {genre}
+Idea: {idea}
+Visual mood: {mood}
+Additional notes: {style_notes}
+Target total duration: {duration} seconds.
+Keep prompts suitable for general audiences. Maintain character and setting consistency.
+"""
+    response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+    raw = response.text.strip()
+    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I)
+    return json.loads(raw)
+
+if st.button("✨ สร้างพล็อตและแบ่งฉาก", type="primary", use_container_width=True):
+    if not idea.strip():
+        st.error("กรุณาใส่ไอเดียเรื่องก่อน")
+    else:
+        with st.spinner("กำลังวางโครงเรื่อง..."):
+            try:
+                if use_ai and api_key.strip():
+                    plan = gemini_story(api_key.strip(), title, genre, idea, scene_count, duration, mood, language, style_notes)
+                    st.session_state["film_plan"] = plan
+                    st.session_state["plan_source"] = "Gemini API"
+                else:
+                    st.session_state["film_plan"] = fallback_story(title, genre, idea, scene_count, duration, mood, language, style_notes)
+                    st.session_state["plan_source"] = "Template mode (ไม่ใช้ API)"
+            except Exception as e:
+                st.error(f"เรียก AI ไม่สำเร็จ: {e}")
+                st.info("ลองปิดตัวเลือก Gemini API เพื่อใช้โหมดฟรีแบบเทมเพลต หรือเช็ก API key และโควตา")
+
+if "film_plan" in st.session_state:
+    plan = st.session_state["film_plan"]
+    st.success(f"สร้างแผนแล้ว • แหล่งสร้าง: {st.session_state.get('plan_source', 'ไม่ทราบ')}")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("จำนวนฉาก", len(plan.get("scenes", [])))
+    m2.metric("ความยาวเป้าหมาย", f"{plan.get('duration_seconds', duration)} วินาที")
+    m3.metric("แนวหนัง", plan.get("genre", genre))
+    st.subheader(plan.get("title", "เรื่องของฉัน"))
+    st.write(plan.get("logline", ""))
+    st.caption(f"สไตล์ภาพ: {plan.get('visual_style', '')}")
+    tabs = st.tabs([f"ฉาก {s.get('scene_number', i+1)}" for i, s in enumerate(plan.get("scenes", []))])
+    for tab, scene in zip(tabs, plan.get("scenes", [])):
+        with tab:
+            st.markdown(f"### {scene.get('scene_title', 'ฉาก')}")
+            st.write(scene.get("purpose", ""))
+            st.markdown("**Prompt สำหรับภาพอ้างอิง**")
+            st.code(scene.get("visual_prompt", ""), language=None)
+            st.markdown("**Prompt สำหรับวิดีโอ**")
+            st.code(scene.get("video_prompt", ""), language=None)
+            st.markdown("**เสียงบรรยาย**")
+            st.write(scene.get("voiceover", ""))
+            st.caption(f"เวลาฉาก: {scene.get('duration_seconds', 0)} วินาที")
+    json_bytes = json.dumps(plan, ensure_ascii=False, indent=2).encode("utf-8")
+    prompt_text = "\n\n".join(
+        f"SCENE {s.get('scene_number')}: {s.get('scene_title')}\nIMAGE PROMPT: {s.get('visual_prompt')}\nVIDEO PROMPT: {s.get('video_prompt')}\nVOICEOVER: {s.get('voiceover')}"
+        for s in plan.get("scenes", [])
+    )
+    c1, c2 = st.columns(2)
+    c1.download_button("⬇️ ดาวน์โหลดแผน JSON", data=json_bytes, file_name="film_plan.json", mime="application/json", use_container_width=True)
+    c2.download_button("⬇️ ดาวน์โหลด Prompts TXT", data=prompt_text, file_name="film_prompts.txt", mime="text/plain", use_container_width=True)
+    st.warning("รุ่นนี้สร้างพล็อตและ Prompt เท่านั้น ยังไม่ได้สร้างภาพหรือวิดีโอจริง ขั้นต่อไปคือเชื่อมต่อผู้ให้บริการสร้างสื่อที่มี API และตรวจสอบโควตา/ค่าใช้จ่ายก่อนใช้งาน")
+else:
+    st.info("เริ่มได้เลย: ใส่ไอเดียเรื่อง แล้วกด “สร้างพล็อตและแบ่งฉาก”")
+    st.markdown("**ความสามารถในรุ่นแรก**")
+    st.write("- สร้างโครงเรื่องและแบ่งฉาก")
+    st.write("- สร้าง Prompt สำหรับภาพและวิดีโอ")
+    st.write("- ดาวน์โหลดผลลัพธ์เป็น JSON และ TXT")
+    st.write("- เลือกใช้เทมเพลตฟรี หรือ Gemini API หากมีคีย์")
